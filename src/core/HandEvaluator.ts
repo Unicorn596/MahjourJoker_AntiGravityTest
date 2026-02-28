@@ -752,8 +752,21 @@ function runTests() {
         console.log('  总分:', result?.totalScore);
         console.log('  预期: 条7杠=明杠(x2) 而非暗杠(x3), talismanFree[条7]=3<4, mult=2');
         console.log('  通过:', result !== null && result.baseMult === 2, '\n');
+        // ─── 测试 6: 增量提交 (3 张) - 123饼顺子局部提交 ───
+        {
+            _uid = 0;
+            const hand = [
+                W(TileSuit.Bing, TileRank.One), W(TileSuit.Bing, TileRank.Two), W(TileSuit.Bing, TileRank.Three),  // 顺子
+            ]; // 3 张
+            const result = ev.evaluate(hand);
+            console.log('测试 6: 增量提交 (123饼 顺子)');
+            console.log('  牌型:', result?.pattern);
+            console.log('  基础分:', result?.baseChips, '  倍率:', result?.baseMult);
+            console.log('  总分:', result?.totalScore);
+            console.log('  预期: 牌型= partial, chips=10+5+5=20, mult=1');
+            console.log('  通过:', result !== null && result.pattern === HandPattern.Partial && result.baseChips === 20, '\n');
+        }
     }
-}
 
-// 在模块加载时自动运行测试 (仅开发阶段)
-runTests();
+    // 在模块加载时自动运行测试 (仅开发阶段)
+    runTests();
