@@ -11,8 +11,8 @@
  *  纯逻辑层 —— 不引用任何 Phaser 代码
  */
 
-import { TileSuit, TileRank, MeldType, HandPattern } from '../types/enums';
-import type { ITile, IMeld, IHandResult } from '../types/interfaces';
+import { TileSuit, TileRank, MeldType, HandPattern, KongType, SlotArea } from '../types/enums';
+import type { ITile, IMeld, IHandResult, ISubmissionPileState, IKongSlot } from '../types/interfaces';
 
 // ─── 常量 ──────────────────────────────────────────────────
 
@@ -40,13 +40,7 @@ function tileToIndex(suit: TileSuit, rank: TileRank): number {
     }
 }
 
-function indexToSuitRank(idx: number): { suit: TileSuit; rank: TileRank } {
-    if (idx < 9) return { suit: TileSuit.Wan, rank: (idx + 1) as TileRank };
-    if (idx < 18) return { suit: TileSuit.Tiao, rank: (idx - 9 + 1) as TileRank };
-    if (idx < 27) return { suit: TileSuit.Bing, rank: (idx - 18 + 1) as TileRank };
-    if (idx < 31) return { suit: TileSuit.Wind, rank: (TileRank.East + idx - 27) as TileRank };
-    return { suit: TileSuit.Dragon, rank: (TileRank.Zhong + idx - 31) as TileRank };
-}
+
 
 /** 能否以此索引为起点组成顺子 (数牌 1-7 位置) */
 function canStartSequence(idx: number): boolean {
@@ -538,8 +532,10 @@ function buildResult(
 
     return {
         pattern,
+        matchedPatterns: [pattern],
         melds,
         pair,
+        kongs: [],
         baseChips: scored.chips,
         baseMult: scored.mult,
         totalScore: scored.total,
@@ -608,6 +604,247 @@ export class HandEvaluator {
 
         return buildResult(best.scored, best.pattern, tilesByIndex, wildcards);
     }
+
+    /**
+     * GDD v2 新算番入口: 接收一个已填满的 SubmissionPileState。
+     * 自动从槽位提取已分组的面子/雀头/杠，判定番种和基准得分。
+     */
+    evaluateSubmission(pile: ISubmissionPileState): IHandResult | null {
+        // 七对子特殊判定
+        if (pile.isSevenPairsMode) {
+            if (!pile.sevenPairSlots.every(s => s.filled && s.meld)) return null;
+            return this.scoreSubmission(
+                pile.sevenPairSlots[6].meld!, // 将最后一个当雀头
+                pile.sevenPairSlots.slice(0, 6).map(s => s.meld!), // 前6个当面子返回兼容旧格式
+                [HandPattern.QiDuiZi],
+                2 // 七对子保底倍率
+            );
+        }
+
+        // 常规结构验证
+        const isSettlementFull = pile.settlementMeldSlots.every(s => s.filled && s.meld !== null);
+        const isPairFull = pile.pairSlot.filled && pile.pairSlot.meld !== null;
+        if (!isSettlementFull || !isPairFull) return null;
+
+        const melds = pile.settlementMeldSlots.map(s => s.meld!);
+        const pair = pile.pairSlot.meld!;
+        const kongs = pile.kongSlots.filter(s => s.filled && s.meld).map(s => s.meld!);
+
+        // 番种识别
+        const matchedPatterns = this.detectPatterns(melds, pair, kongs);
+        if (matchedPatterns.length === 0) matchedPatterns.push(HandPattern.PingHu); // 默认平和兜底
+
+        // 取最大倍率的形为主番种
+        const patternMults: Record<string, number> = {
+            [HandPattern.PingHu]: 2,
+            [HandPattern.DuanYaoJiu]: 3,
+            [HandPattern.HunYiSe]: 4,
+            [HandPattern.DuiDuiHu]: 4,
+            [HandPattern.QuanDaiYaoJiu]: 5,
+            [HandPattern.QiDuiZi]: 5,
+            [HandPattern.QingYiSe]: 6,
+            [HandPattern.ZiYiSe]: 8,
+            [HandPattern.GuoShiWuShuang]: 10,
+        };
+
+        let bestPattern = matchedPatterns[0];
+        let basePatternMult = patternMults[bestPattern] || 2;
+        for (const p of matchedPatterns) {
+            const m = patternMults[p] || 2;
+            if (m > basePatternMult) {
+                bestPattern = p;
+                basePatternMult = m;
+            }
+        }
+
+        // 结合杠牌倍率计算总分
+        return this.scoreSubmissionWithKongs(melds, pair, pile.kongSlots, bestPattern, matchedPatterns, basePatternMult);
+    }
+
+    private detectPatterns(melds: IMeld[], pair: IMeld, kongs: IMeld[]): HandPattern[] {
+        const patterns: HandPattern[] = [];
+        const allMelds = [...melds, ...kongs];
+
+        // 提取所有涉及的牌（包括万能牌，但只看其当作的实际牌面——对于提交来说，UI应该已经赋予了万能牌具体身份，
+        // 这里简化为判断原始手牌的特征）
+        const allTiles = [...allMelds.flatMap(m => m.tiles), ...pair.tiles];
+
+        let hasWan = false;
+        let hasTiao = false;
+        let hasBing = false;
+        let hasZi = false;
+        let hasYaoJiu = false;
+        let isAllKezi = true;
+
+        for (const t of allTiles) {
+            if (t.isWildcard) continue;
+            if (t.suit === TileSuit.Wan) hasWan = true;
+            else if (t.suit === TileSuit.Tiao) hasTiao = true;
+            else if (t.suit === TileSuit.Bing) hasBing = true;
+            else hasZi = true;
+
+            if (t.rank === TileRank.One || t.rank === TileRank.Nine || t.suit === TileSuit.Wind || t.suit === TileSuit.Dragon) {
+                hasYaoJiu = true;
+            }
+        }
+
+        // 判断顺子和刻子
+        for (const m of allMelds) {
+            if (m.type === MeldType.Shunzi) isAllKezi = false;
+        }
+
+        const suitsCount = (hasWan ? 1 : 0) + (hasTiao ? 1 : 0) + (hasBing ? 1 : 0);
+
+        // --- 番种判断逻辑 ---
+        if (!hasYaoJiu && !hasZi) {
+            patterns.push(HandPattern.DuanYaoJiu);
+        }
+        if (suitsCount === 1 && hasZi) {
+            patterns.push(HandPattern.HunYiSe);
+        }
+        if (suitsCount === 1 && !hasZi) {
+            patterns.push(HandPattern.QingYiSe);
+        }
+        if (suitsCount === 0 && hasZi) {
+            patterns.push(HandPattern.ZiYiSe);
+        }
+        if (isAllKezi) {
+            patterns.push(HandPattern.DuiDuiHu);
+        }
+
+        // 全带幺 (每组面子和雀头都必定包含老头牌或字牌)
+        let isQuanDai = true;
+        for (const m of [...allMelds, pair]) {
+            let has19Z = false;
+            for (const t of m.tiles) {
+                if (t.isWildcard) continue;
+                if (t.rank === TileRank.One || t.rank === TileRank.Nine || t.rank >= TileRank.East) {
+                    has19Z = true;
+                    break;
+                }
+            }
+            // 纯万能牌组当做不满足 (因为最优解一般不会全万能带幺)
+            if (!has19Z && m.tiles.some(t => !t.isWildcard)) isQuanDai = false;
+        }
+        if (isQuanDai && hasYaoJiu) {
+            patterns.push(HandPattern.QuanDaiYaoJiu);
+        }
+
+        // 如果上面一个都没，至少是个平和 (必须无刻/无杠? GDD 中提到平和指最基础的四顺子)
+        // GDD 原文 "平和（全顺子+雀头）"，为了简化，凡是不符合上面高级番种的，都算平和保底
+        if (patterns.length === 0 && !isAllKezi && kongs.length === 0) {
+            patterns.push(HandPattern.PingHu);
+        }
+
+        return patterns;
+    }
+
+    private scoreSubmissionWithKongs(
+        melds: IMeld[], pair: IMeld,
+        kongSlots: IKongSlot[],
+        bestPattern: HandPattern,
+        matchedPatterns: HandPattern[],
+        baseMult: number
+    ): IHandResult {
+        let chips = 0;
+        let finalMult = baseMult;
+        let totalWC = pair.wildcardCount;
+
+        // 雀头算分
+        const pTile = pair.tiles.find(t => !t.isWildcard);
+        if (pTile) {
+            chips += chipsForIndex(tileToIndex(pTile.suit, pTile.rank)) * 2;
+        } else {
+            chips += 40; // 纯万能
+        }
+
+        // 面子算分
+        for (const m of melds) {
+            totalWC += m.wildcardCount;
+            const t = m.tiles.find(tile => !tile.isWildcard);
+            if (!t) {
+                chips += m.type === MeldType.Shunzi ? 15 : 60; // 纯万能顺子或刻子保底
+                continue;
+            }
+
+            const idx = tileToIndex(t.suit, t.rank);
+            if (m.type === MeldType.Kezi) {
+                chips += chipsForIndex(idx) * 3;
+            } else if (m.type === MeldType.Shunzi) {
+                // 这个牌未必是顺子的头，需要通过整个数组去寻找最开始的 rank。这里简单把所有张数的基础分加起来：
+                for (const tile of m.tiles) {
+                    if (!tile.isWildcard) {
+                        chips += chipsForIndex(tileToIndex(tile.suit, tile.rank));
+                    }
+                }
+                // (万能牌代替的部分被少算，这里简单补中间差值 5 分，GDD 数值体系对顺子分要求是 15 (全中张) 左右)
+                for (let i = 0; i < m.wildcardCount; i++) chips += 5;
+            }
+        }
+
+        // 杠算分
+        for (const slot of kongSlots) {
+            if (!slot.filled || !slot.meld) continue;
+            const m = slot.meld;
+            totalWC += m.wildcardCount;
+
+            const t = m.tiles.find(tile => !tile.isWildcard);
+            if (t) {
+                chips += chipsForIndex(tileToIndex(t.suit, t.rank)) * 4;
+            } else {
+                chips += 80;
+            }
+
+            if (slot.kongType === KongType.DarkKong) {
+                finalMult *= 3;
+            } else {
+                finalMult *= 2;
+            }
+        }
+
+        // 万能牌惩罚乘法
+        chips = Math.floor(chips * Math.pow(0.9, totalWC));
+
+        return {
+            pattern: bestPattern,
+            matchedPatterns,
+            melds,
+            pair,
+            kongs: kongSlots.filter(s => s.filled).map(s => s.meld!),
+            baseChips: chips,
+            baseMult: finalMult,
+            totalScore: chips * finalMult
+        };
+    }
+
+    /** 七对子计算 */
+    private scoreSubmission(pair: IMeld, sixPairs: IMeld[], patterns: HandPattern[], mult: number): IHandResult {
+        let chips = 0;
+        let totalWC = pair?.wildcardCount || 0;
+
+        const allPairs = pair ? [...sixPairs, pair] : [...sixPairs];
+        for (const p of allPairs) {
+            totalWC += p.wildcardCount;
+            const t = p.tiles.find((tile: ITile) => !tile.isWildcard);
+            if (t) {
+                chips += chipsForIndex(tileToIndex(t.suit, t.rank)) * 2;
+            } else {
+                chips += 40;
+            }
+        }
+
+        chips = Math.floor(chips * Math.pow(0.9, totalWC));
+        return {
+            pattern: patterns[0],
+            matchedPatterns: patterns,
+            melds: sixPairs, // 兼容
+            pair: pair,
+            kongs: [],
+            baseChips: chips,
+            baseMult: mult,
+            totalScore: chips * mult
+        };
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -623,7 +860,7 @@ function tile(
     opts?: { wild?: boolean; talisman?: boolean },
 ): ITile {
     return {
-        id: `t${++_uid}`,
+        id: `t${++_uid} `,
         suit,
         rank,
         attribute: 'normal' as ITile['attribute'],
@@ -752,21 +989,83 @@ function runTests() {
         console.log('  总分:', result?.totalScore);
         console.log('  预期: 条7杠=明杠(x2) 而非暗杠(x3), talismanFree[条7]=3<4, mult=2');
         console.log('  通过:', result !== null && result.baseMult === 2, '\n');
-        // ─── 测试 6: 增量提交 (3 张) - 123饼顺子局部提交 ───
-        {
-            _uid = 0;
-            const hand = [
-                W(TileSuit.Bing, TileRank.One), W(TileSuit.Bing, TileRank.Two), W(TileSuit.Bing, TileRank.Three),  // 顺子
-            ]; // 3 张
-            const result = ev.evaluate(hand);
-            console.log('测试 6: 增量提交 (123饼 顺子)');
-            console.log('  牌型:', result?.pattern);
-            console.log('  基础分:', result?.baseChips, '  倍率:', result?.baseMult);
-            console.log('  总分:', result?.totalScore);
-            console.log('  预期: 牌型= partial, chips=10+5+5=20, mult=1');
-            console.log('  通过:', result !== null && result.pattern === HandPattern.Partial && result.baseChips === 20, '\n');
-        }
     }
 
-    // 在模块加载时自动运行测试 (仅开发阶段)
-    runTests();
+    // ─── 测试 6: 增量提交 (3 张) - 123饼顺子局部提交 ───
+    {
+        _uid = 0;
+        const hand = [
+            W(TileSuit.Bing, TileRank.One), W(TileSuit.Bing, TileRank.Two), W(TileSuit.Bing, TileRank.Three),  // 顺子
+        ]; // 3 张
+        const result = ev.evaluate(hand);
+        console.log('测试 6: 增量提交 (123饼 顺子)');
+        console.log('  牌型:', result?.pattern);
+        console.log('  基础分:', result?.baseChips, '  倍率:', result?.baseMult);
+        console.log('  总分:', result?.totalScore);
+        console.log('  预期: 牌型= partial, chips=10+5+5=20, mult=1');
+        console.log('  通过:', result !== null && result.pattern === HandPattern.Partial && result.baseChips === 20, '\n');
+    }
+
+    // ─── 新测 7: evaluateSubmission 测试 ───
+    {
+        _uid = 0;
+        const pileState = {
+            kongCount: 1,
+            isSevenPairsMode: false,
+            sevenPairSlots: [],
+            kongSlots: [
+                {
+                    filled: true,
+                    kongType: KongType.DarkKong,
+                    meld: {
+                        type: MeldType.Gangzi,
+                        tiles: Array.from({ length: 4 }, () => W(TileSuit.Tiao, TileRank.Nine)),
+                        wildcardCount: 0
+                    }
+                },
+                ...Array.from({ length: 3 }, () => ({ filled: false, kongType: null, meld: null }))
+            ],
+            settlementMeldSlots: [
+                {
+                    area: SlotArea.Settlement, acceptType: 'meld' as 'meld', filled: true, meld: {
+                        type: MeldType.Shunzi,
+                        tiles: [W(TileSuit.Tiao, TileRank.One), W(TileSuit.Tiao, TileRank.Two), W(TileSuit.Tiao, TileRank.Three)],
+                        wildcardCount: 0
+                    }
+                },
+                {
+                    area: SlotArea.Settlement, acceptType: 'meld' as 'meld', filled: true, meld: {
+                        type: MeldType.Kezi,
+                        tiles: Array.from({ length: 3 }, () => W(TileSuit.Tiao, TileRank.Four)),
+                        wildcardCount: 0
+                    }
+                },
+                {
+                    area: SlotArea.Settlement, acceptType: 'meld' as 'meld', filled: true, meld: {
+                        type: MeldType.Kezi,
+                        tiles: Array.from({ length: 3 }, () => W(TileSuit.Tiao, TileRank.Eight)),
+                        wildcardCount: 0
+                    }
+                }
+            ],
+            pairSlot: {
+                area: SlotArea.Settlement, acceptType: 'pair' as 'pair', filled: true, meld: {
+                    type: MeldType.Pair,
+                    tiles: Array.from({ length: 2 }, () => W(TileSuit.Tiao, TileRank.Five)),
+                    wildcardCount: 0
+                }
+            }
+        };
+
+        const result = ev.evaluateSubmission(pileState);
+        console.log('新测 7: evaluateSubmission (清一色 + 暗杠)');
+        console.log('  牌型:', result?.pattern);
+        console.log('  基础分:', result?.baseChips, '  倍率:', result?.baseMult);
+        console.log('  总分:', result?.totalScore);
+        console.log('  预期: 清一色 (mult=6) * 暗杠 (mult=3) = mult 18');
+        console.log('  通过:', result !== null && result.pattern === HandPattern.QingYiSe && result.baseMult === 18, '\n');
+    }
+}
+
+// 在模块加载时自动运行测试 (仅开发阶段)
+runTests();

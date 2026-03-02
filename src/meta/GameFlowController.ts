@@ -16,7 +16,7 @@
  *  纯逻辑层 —— 不引用任何 Phaser 代码
  */
 
-import { MetaPhase, HandPattern, Language, Rarity, PermanentTalentType } from '../types/enums';
+import { MetaPhase, HandPattern, Language, PermanentTalentType, DeckMode } from '../types/enums';
 import type { IPlayerProfile, IRunState, IShopState } from '../types/interfaces';
 import { PersistenceManager } from './PersistenceManager';
 import { MetaProgressionManager } from './MetaProgressionManager';
@@ -94,7 +94,7 @@ export class GameFlowController {
     // ─── 主菜单操作 ──────────────────────────────────────────
 
     /** 开启新征程 */
-    startNewRun(seed?: number): IRunState {
+    startNewRun(deckMode: DeckMode = DeckMode.Standard, seed?: number): IRunState {
         const actualSeed = seed ?? Date.now();
         this._rng = new RNG(actualSeed);
 
@@ -105,6 +105,7 @@ export class GameFlowController {
             seed: actualSeed,
             ante: 1,
             round: 1,
+            deckMode,
             money: mods.initialMoney,
             sparrows: [],
             talismans: [],
@@ -296,7 +297,7 @@ export function runGameFlowControllerTests(): void {
     console.log('  通过:', ctrl.phase === MetaPhase.MainMenu, '\n');
 
     // 测试 2: 开启新征程
-    const run = ctrl.startNewRun(42);
+    const run = ctrl.startNewRun(DeckMode.Standard, 42);
     console.log('测试 2: 开启新征程');
     console.log('  phase:', ctrl.phase);
     console.log('  money:', run.money);
@@ -325,7 +326,7 @@ export function runGameFlowControllerTests(): void {
 
     // 测试 6: 小局失败 → GameOver
     const ctrl2 = new GameFlowController();
-    ctrl2.startNewRun(99);
+    ctrl2.startNewRun(DeckMode.Standard, 99);
     ctrl2.leaveShop();
     const result6 = ctrl2.endRound(false, 100);
     console.log('测试 6: 小局失败');

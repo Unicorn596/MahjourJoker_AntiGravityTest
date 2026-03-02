@@ -1,5 +1,5 @@
 import * as Phaser from 'phaser';
-import { GameStateManager } from '../core/GameStateManager';
+import { RoundManager } from '../core/RoundManager';
 import { SparrowSystem } from '../systems/SparrowSystem';
 import { TalismanSystem } from '../systems/TalismanSystem';
 import { TileSprite } from '../objects/TileSprite';
@@ -7,14 +7,17 @@ import { HUD } from '../objects/HUD';
 import { globalBus } from '../utils/EventBus';
 import type { GameFlowController } from '../meta/GameFlowController';
 import { MetaPhase, HandPattern } from '../types/enums';
+import { SceneTransition } from '../utils/SceneTransition';
 
 export class GameScene extends Phaser.Scene {
-    private gameStateManager!: GameStateManager;
+    private roundManager!: RoundManager;
     private sparrowSystem!: SparrowSystem;
     private talismanSystem!: TalismanSystem;
 
     private handSprites: TileSprite[] = [];
+    private pileSprites: TileSprite[] = [];
     private handContainer!: Phaser.GameObjects.Container;
+    private pileContainer!: Phaser.GameObjects.Container;
 
     private submitBtn!: Phaser.GameObjects.Container;
     private discardBtn!: Phaser.GameObjects.Container;
@@ -31,15 +34,11 @@ export class GameScene extends Phaser.Scene {
     }
 
     create() {
+        SceneTransition.fadeIn(this);
         this.cameras.main.setBackgroundColor('#2c3e50');
 
         // ==== 从 FlowController 同步数据 ====
-        const initialSeed = this.flowController.runState?.seed || Date.now();
-        this.gameStateManager = new GameStateManager(initialSeed);
-
-        // 传递初始资产和目标分需求 (基于重数)
-        this.gameStateManager.addMoney(this.flowController.runState?.money || 0);
-        // 如果设计上有目标分随 ante 递增的逻辑，可以在这里强行 override state.targetScore
+        this.roundManager = new RoundManager();
 
         this.sparrowSystem = new SparrowSystem();
         this.talismanSystem = new TalismanSystem();
@@ -52,7 +51,18 @@ export class GameScene extends Phaser.Scene {
         this.registerEvents();
 
         this.highestPattern = '';
-        this.gameStateManager.startRound();
+
+        // TODO: 从 GameFlowController 或者某配置取 TargetScore, 等等
+        const initialSeed = this.flowController.runState?.seed || Date.now();
+        const ante = this.flowController.runState?.ante || 1;
+        const deckMode = this.flowController.runState?.deckMode; // 提取 deckMode
+        this.roundManager.startRound({
+            targetScore: 1000 * Math.pow(1.3, ante - 1), // 示例：每重上涨目标分
+            maxDiscardCount: 5,  // 弃牌次数默认增加到5
+            maxDiscardTiles: 5,
+            initialHandSize: 13,
+            deckMode: deckMode
+        }, initialSeed);
     }
 
     private createUI() {
@@ -60,6 +70,17 @@ export class GameScene extends Phaser.Scene {
         const height = this.cameras.main.height;
 
         new HUD(this, 30, 30);
+
+        // 提交区渲染 (Slot Base)
+        const slotBase = this.add.nineslice(width / 2, height / 2 - 40, 'panel_bg', undefined, 600, 160, 24, 24, 24, 24);
+        slotBase.setTint(0x223344);
+        slotBase.setAlpha(0.8);
+        const slotText = this.add.text(width / 2, height / 2 - 90, '出牌区', {
+            fontFamily: '"Noto Sans SC", sans-serif', fontSize: '20px', color: '#667788', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        this.tweens.add({ targets: slotText, alpha: 0.3, duration: 1500, yoyo: true, repeat: -1 });
+
+        this.pileContainer = this.add.container(width / 2, height / 2 - 40);
         this.handContainer = this.add.container(width / 2, height - 120);
 
         this.createButtons();
@@ -95,34 +116,35 @@ export class GameScene extends Phaser.Scene {
     }
 
     private registerEvents() {
-        globalBus.on('game:roundStarted', () => this.renderHand());
-        globalBus.on('game:phaseChanged', () => this.renderHand());
-        globalBus.on('game:invalidHand', () => {
-            this.cameras.main.shake(200, 0.01);
-            this.toast('无效的牌型或不符合规则', '#ff3333');
+        globalBus.on('round:started', () => {
+            this.renderHand();
+            this.renderSubmissionPile();
         });
-        globalBus.on('game:tilesDiscarded', () => this.renderHand());
+        globalBus.on('gameState:changed', () => {
+            this.renderHand();
+            this.renderSubmissionPile();
+        });
 
-        // 捕捉算分事件以记录最高番型
-        globalBus.on('game:scoring', (data: any) => {
-            if (data.result && data.result.patternConfigs.length > 0) {
-                const patternName = data.result.patternConfigs[0].name;
-                // 选出单次最高分的那个，或者简单记录最后一次
+        // 捕捉算分事件以记录最高番型和播放特写动画
+        globalBus.on('round:completedHand', (data: any) => {
+            if (data.result && data.result.pattern) {
+                const patternName = data.result.pattern;
                 this.highestPattern = patternName;
+                this.playScoringJuice(data.result.totalScore, patternName);
             }
         });
 
-        globalBus.on('game:roundWon', () => this.handleRoundEnd(true));
-        globalBus.on('game:gameOver', () => this.handleRoundEnd(false));
+        globalBus.on('round:victory', () => this.handleRoundEnd(true));
+        globalBus.on('round:defeat', (data: any) => this.handleRoundEnd(false, data?.reason));
     }
 
-    private handleRoundEnd(success: boolean) {
+    private handleRoundEnd(success: boolean, reason?: string) {
         // 关闭交互
         this.submitBtn.disableInteractive();
         this.discardBtn.disableInteractive();
 
-        const state = this.gameStateManager.getState();
-        const score = (state as any).score;
+        const state = this.roundManager.getGameState();
+        const score = state.cumulativeScore;
 
         // 延迟一段时间呈现特效
         this.time.delayedCall(1500, () => {
@@ -138,20 +160,47 @@ export class GameScene extends Phaser.Scene {
                 // 将 GameStateManager 中赚取的金额差分或全量同步回外部系统
                 const runState = this.flowController.runState;
                 if (runState) {
-                    runState.money = (state as any).money;
+                    runState.money = state.money || runState.money;
                 }
 
-                this.scene.start('ShopScene');
+                SceneTransition.fadeTo(this, 'ShopScene');
             } else if (result.nextPhase === MetaPhase.GameOver) {
                 // 显示全屏报错
                 this.add.rectangle(this.cameras.main.width / 2, this.cameras.main.height / 2,
-                    this.cameras.main.width, this.cameras.main.height, 0x000000, 0.8);
-                this.add.text(this.cameras.main.width / 2, this.cameras.main.height / 2, '游戏结束', {
+                    this.cameras.main.width, this.cameras.main.height, 0x000000, 0.8).setDepth(100);
+                this.add.text(this.cameras.main.width / 2, this.cameras.main.height / 2 - 100, '游戏结束', {
                     fontFamily: '"Noto Sans SC", sans-serif', fontSize: '64px', color: '#ff3333'
-                }).setOrigin(0.5);
+                }).setOrigin(0.5).setDepth(101);
 
-                this.time.delayedCall(3000, () => {
-                    this.scene.start('MainMenuScene');
+                if (reason) {
+                    this.add.text(this.cameras.main.width / 2, this.cameras.main.height / 2, reason, {
+                        fontFamily: '"Noto Sans SC", sans-serif', fontSize: '24px', color: '#aaaaaa'
+                    }).setOrigin(0.5).setDepth(101);
+                }
+
+                const btnContainer = this.add.container(this.cameras.main.width / 2, this.cameras.main.height / 2 + 100).setDepth(101);
+                const btnBg = this.add.graphics();
+                btnBg.fillStyle(0x334455, 1);
+                btnBg.fillRoundedRect(-100, -30, 200, 60, 10);
+                const btnText = this.add.text(0, 0, '返回主菜单', {
+                    fontFamily: '"Noto Sans SC", sans-serif', fontSize: '24px', color: '#ffffff', fontStyle: 'bold'
+                }).setOrigin(0.5);
+                btnContainer.add([btnBg, btnText]);
+                btnContainer.setSize(200, 60);
+                btnContainer.setInteractive({ useHandCursor: true });
+
+                btnContainer.on('pointerover', () => {
+                    btnBg.clear();
+                    btnBg.fillStyle(0x445566, 1);
+                    btnBg.fillRoundedRect(-100, -30, 200, 60, 10);
+                });
+                btnContainer.on('pointerout', () => {
+                    btnBg.clear();
+                    btnBg.fillStyle(0x334455, 1);
+                    btnBg.fillRoundedRect(-100, -30, 200, 60, 10);
+                });
+                btnContainer.on('pointerdown', () => {
+                    SceneTransition.fadeTo(this, 'MainMenuScene');
                 });
             } else if (result.nextPhase === MetaPhase.Victory) {
                 // 胜利结算 (占位，如果加入了最大通关数)
@@ -162,7 +211,7 @@ export class GameScene extends Phaser.Scene {
                 }).setOrigin(0.5);
 
                 this.time.delayedCall(4000, () => {
-                    this.scene.start('MainMenuScene');
+                    SceneTransition.fadeTo(this, 'MainMenuScene');
                 });
             }
         });
@@ -175,44 +224,173 @@ export class GameScene extends Phaser.Scene {
         this.tweens.add({ targets: txt, y: txt.y - 100, alpha: 0, duration: 1500, onComplete: () => txt.destroy() });
     }
 
+    private playScoringJuice(scoreGained: number, patternName: string) {
+        const width = this.cameras.main.width;
+        const height = this.cameras.main.height;
+
+        // 1. 屏幕震动
+        this.cameras.main.shake(200, 0.015);
+
+        // 2. 华丽的跳字表现
+        const scoreText = this.add.text(width / 2, height / 2, `+${scoreGained}`, {
+            fontFamily: '"Noto Sans SC", sans-serif', fontSize: '80px', color: '#ffd700',
+            stroke: '#ff8c00', strokeThickness: 8, fontStyle: 'bold',
+            shadow: { offsetY: 5, color: '#ff8c00', blur: 15, stroke: true, fill: true }
+        }).setOrigin(0.5).setAlpha(0).setScale(0.5);
+
+        // 番型印章
+        const patternText = this.add.text(width / 2, height / 2 - 80, patternName, {
+            fontFamily: '"Noto Sans SC", sans-serif', fontSize: '40px', color: '#ff5252',
+            stroke: '#ffffff', strokeThickness: 4, fontStyle: 'bold'
+        }).setOrigin(0.5).setAlpha(0).setScale(2);
+
+        // 考虑到 Phaser 版本兼容性，直接用 chain tweens 后续步骤或者回调实现
+        this.tweens.add({
+            targets: [scoreText, patternText],
+            alpha: 1, scale: 1, duration: 300, ease: 'Back.easeOut',
+            onComplete: () => {
+                if (scoreGained > 500) {
+                    const particles = this.add.particles(width / 2, height / 2, 'panel_bg', {
+                        speed: { min: 400, max: 800 }, angle: { min: 0, max: 360 }, scale: { start: 0.1, end: 0 },
+                        alpha: { start: 0.8, end: 0 }, blendMode: 'ADD', lifespan: 600, quantity: 20
+                    });
+                    particles.explode();
+                }
+
+                // 悬停上升
+                this.tweens.add({
+                    targets: [scoreText, patternText],
+                    y: '-=100', duration: 1000, ease: 'Sine.easeInOut',
+                    onComplete: () => {
+                        // 退场
+                        this.tweens.add({
+                            targets: [scoreText, patternText],
+                            alpha: 0, scale: 1.5, duration: 200, ease: 'Power2',
+                            onComplete: () => { scoreText.destroy(); patternText.destroy(); }
+                        });
+                    }
+                });
+            }
+        });
+    }
+
     private renderHand() {
         this.handSprites.forEach(s => s.destroy());
         this.handSprites = [];
 
-        const state = this.gameStateManager.getState();
+        const state = this.roundManager.getGameState();
         const tiles = state.hand;
         const sortedTiles = [...tiles].sort((a, b) => {
             if (a.suit !== b.suit) return a.suit.localeCompare(b.suit);
             return a.rank - b.rank;
         });
 
-        const startX = -((sortedTiles.length - 1) * 65) / 2;
+        const totalTiles = sortedTiles.length;
+        // 直线布局参数
+        const spacingX = 65; // 卡牌间距
+        const startX = -((totalTiles - 1) * spacingX) / 2;
 
         sortedTiles.forEach((tile, index) => {
-            const x = startX + index * 65;
-            const sprite = new TileSprite(this, x, 0, tile);
+            const x = startX + index * spacingX;
+            const y = 0;
+
+            const sprite = new TileSprite(this, x, y, tile);
+
+            // 让卡牌保持直立
+            sprite.rotation = 0;
+
+            // 这里移除了原本复原旋转的代码，因为本来就没有特殊旋转了
+            const originalOnOut = (sprite as any).onOut;
+            (sprite as any).onOut = function () {
+                originalOnOut.call(this);
+            };
+
             sprite.on('pointerdown', () => sprite.setSelected(!sprite.isSelected));
+
+            // 添加入场动画
+            sprite.y += 200;
+            sprite.alpha = 0;
+            this.tweens.add({
+                targets: sprite,
+                y: y,
+                alpha: 1,
+                duration: 400,
+                ease: 'Back.easeOut',
+                delay: index * 40 // 依次飞入
+            });
+
             this.handContainer.add(sprite);
             this.handSprites.push(sprite);
         });
     }
 
-    private onSubmitClicked() {
-        const selectedIds = this.handSprites.filter(s => s.isSelected).map(s => s.tileData.id);
-        if (selectedIds.length === 0) return;
-        this.gameStateManager.submitHand(selectedIds);
+    private renderSubmissionPile() {
+        this.pileSprites.forEach(s => s.destroy());
+        this.pileSprites = [];
 
-        const state = this.gameStateManager.getState();
-        const score = (state as any).score;
-        const targetScore = (state as any).targetScore;
-        if (score >= targetScore) {
-            this.gameStateManager.endRound();
+        const state = this.roundManager.getGameState();
+        const pile = state.submissionPile;
+
+        let offsetX = -250;
+        const pileY = 0;
+
+        const drawMeld = (meld: any, scale: number = 0.6) => {
+            meld.tiles.forEach((t: any) => {
+                const sprite = new TileSprite(this, offsetX, pileY, t);
+                sprite.setScale(scale);
+                this.pileContainer.add(sprite);
+                this.pileSprites.push(sprite);
+                offsetX += 45 * scale;
+            });
+            offsetX += 20; // 面子之间的间距
+        };
+
+        // 画结算槽
+        pile.settlementMeldSlots.forEach(slot => {
+            if (slot.filled && slot.meld) {
+                drawMeld(slot.meld);
+            }
+        });
+
+        // 画雀头
+        if (pile.pairSlot.filled && pile.pairSlot.meld) {
+            drawMeld(pile.pairSlot.meld);
+        }
+
+        // 画杠槽 (统一紧连着画)
+        pile.kongSlots.forEach(slot => {
+            if (slot.filled && slot.meld) {
+                drawMeld(slot.meld);
+            }
+        });
+    }
+
+    private onSubmitClicked() {
+        const selectedTiles = this.handSprites.filter(s => s.isSelected).map(s => s.tileData);
+        if (selectedTiles.length === 0) return;
+
+        const selectedIds = selectedTiles.map(t => t.id);
+
+        let type: 'meld' | 'pair' | 'kong' = 'meld';
+        if (selectedTiles.length === 2) type = 'pair';
+        else if (selectedTiles.length >= 4) type = 'kong';
+
+        const res = this.roundManager.submitGroup(selectedIds, type);
+
+        if (!res.success) {
+            this.toast(res.reason || '提交无效', '#ff3333');
+            this.cameras.main.shake(200, 0.01);
         }
     }
 
     private onDiscardClicked() {
         const selectedIds = this.handSprites.filter(s => s.isSelected).map(s => s.tileData.id);
         if (selectedIds.length === 0) return;
-        this.gameStateManager.discardTiles(selectedIds);
+
+        const res = this.roundManager.discardTiles(selectedIds);
+        if (!res.success) {
+            this.toast(res.reason || '换牌无效', '#ff3333');
+            this.cameras.main.shake(200, 0.01);
+        }
     }
 }

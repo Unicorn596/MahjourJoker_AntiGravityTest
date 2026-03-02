@@ -2,7 +2,7 @@ import {
     TileSuit, TileRank, TileAttribute, MeldType, KongType,
     HandPattern, GamePhase, SlotArea,
     SparrowEffectType, TalismanEffectType, TalismanCategory,
-    Rarity, PermanentTalentType, PackType, Language,
+    Rarity, PermanentTalentType, PackType, Language, DeckMode
 } from './enums';
 import type { DeckManager } from '../core/DeckManager';
 import type { RNG } from '../utils/RNG';
@@ -181,14 +181,14 @@ export interface ITribulation {
 export interface IRoundConfig {
     /** 目标分数 */
     targetScore: number;
-    /** 最大提交次数 */
-    maxSubmitCount: number;
     /** 最大换牌次数 */
     maxDiscardCount: number;
     /** 每次换牌上限张数 */
     maxDiscardTiles: number;
     /** 初始手牌数 */
     initialHandSize: number;
+    /** 牌组模式 */
+    deckMode?: DeckMode;
 }
 
 /** 全局游戏状态 */
@@ -203,6 +203,8 @@ export interface IGameState {
 
     /** 牌库 */
     deck: ITile[];
+    /** 牌库剩余数量 */
+    deckSize: number;
     /** 弃牌堆 */
     discardPile: ITile[];
     /** 手牌 (标准 8 张) */
@@ -211,10 +213,6 @@ export interface IGameState {
     /** 提交堆状态 */
     submissionPile: ISubmissionPileState;
 
-    /** 已用提交次数 */
-    submitCount: number;
-    /** 最大提交次数 */
-    maxSubmitCount: number;
     /** 已用换牌次数 */
     discardCount: number;
     /** 最大换牌次数 */
@@ -229,6 +227,11 @@ export interface IGameState {
     sparrows: ISparrow[];
     /** 携带的符咒 */
     talismans: ITalisman[];
+
+    /** 当前分数预测 */
+    scorePreview: IScorePreview;
+    /** 单局配置 */
+    roundConfig: IRoundConfig;
 }
 
 // ─── Meta: 对局外流程 ───────────────────────────────────────
@@ -262,6 +265,8 @@ export interface IPlayerProfile {
     language: Language;
     /** 累计对局次数 */
     totalRuns: number;
+    /** 已解锁的牌组模式 */
+    unlockedDecks?: DeckMode[];
 }
 
 /** 杂货铺商品 */
@@ -288,6 +293,7 @@ export interface IRunState {
     seed: number;
     ante: number;
     round: number;
+    deckMode?: DeckMode;
     money: number;
     sparrows: ISparrow[];
     talismans: ITalisman[];

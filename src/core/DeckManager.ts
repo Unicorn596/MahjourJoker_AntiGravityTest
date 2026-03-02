@@ -10,7 +10,7 @@
  *  纯逻辑层 —— 不引用任何 Phaser 代码
  */
 
-import { TileSuit, TileRank, TileAttribute } from '../types/enums';
+import { TileSuit, TileRank, TileAttribute, DeckMode } from '../types/enums';
 import type { ITile } from '../types/interfaces';
 import { RNG } from '../utils/RNG';
 import { globalBus } from '../utils/EventBus';
@@ -21,9 +21,9 @@ export class DeckManager {
     private rng: RNG;
     private uidCounter = 0;
 
-    constructor(seed: number) {
+    constructor(seed: number, mode: DeckMode = DeckMode.Standard) {
         this.rng = new RNG(seed);
-        this.deck = this.createStandardDeck();
+        this.deck = this.createDeck(mode);
         this.shuffle();
     }
 
@@ -75,7 +75,9 @@ export class DeckManager {
         return this.deck.length;
     }
 
-    /** 查看弃牌堆 (只读副本) */
+
+
+    /** 获取当前弃牌堆内容 (只读备份) */
     getDiscardPile(): readonly ITile[] {
         return this._discardPile;
     }
@@ -111,37 +113,54 @@ export class DeckManager {
 
     // ─── 牌库生成 ──────────────────────────────────────────
 
-    /** 生成标准 136 张麻将牌 (万/条/饼各 1-9 ×4, 字牌 7种 ×4) */
-    private createStandardDeck(): ITile[] {
+    /** 根据模式生成牌库 */
+    private createDeck(mode: DeckMode): ITile[] {
         const tiles: ITile[] = [];
 
-        // 数牌: 万/条/饼 各 1-9, 每张 4 枚
-        const numSuits = [TileSuit.Wan, TileSuit.Tiao, TileSuit.Bing];
-        for (const suit of numSuits) {
-            for (let rank = TileRank.One; rank <= TileRank.Nine; rank++) {
-                for (let copy = 0; copy < 4; copy++) {
-                    tiles.push(this.createTile(suit, rank));
-                }
-            }
-        }
-
-        // 风牌: 东南西北, 每张 4 枚
-        const windRanks = [TileRank.East, TileRank.South, TileRank.West, TileRank.North];
-        for (const rank of windRanks) {
-            for (let copy = 0; copy < 4; copy++) {
-                tiles.push(this.createTile(TileSuit.Wind, rank));
-            }
-        }
-
-        // 箭牌: 中发白, 每张 4 枚
-        const dragonRanks = [TileRank.Zhong, TileRank.Fa, TileRank.Bai];
-        for (const rank of dragonRanks) {
-            for (let copy = 0; copy < 4; copy++) {
-                tiles.push(this.createTile(TileSuit.Dragon, rank));
-            }
+        if (mode === DeckMode.Bamboo) {
+            // 纯条子模式: 只有条子和字牌
+            this.addSuitTiles(tiles, [TileSuit.Tiao], 1, 9, 4);
+            this.addWindTiles(tiles, 4);
+            this.addDragonTiles(tiles, 4);
+        } else if (mode === DeckMode.Simples) {
+            // 断幺九模式: 只有万、条、饼的 2~8
+            this.addSuitTiles(tiles, [TileSuit.Wan, TileSuit.Tiao, TileSuit.Bing], 2, 8, 4);
+        } else {
+            // 标准模式
+            this.addSuitTiles(tiles, [TileSuit.Wan, TileSuit.Tiao, TileSuit.Bing], 1, 9, 4);
+            this.addWindTiles(tiles, 4);
+            this.addDragonTiles(tiles, 4);
         }
 
         return tiles;
+    }
+
+    private addSuitTiles(tiles: ITile[], suits: TileSuit[], minRank: number, maxRank: number, copies: number) {
+        for (const suit of suits) {
+            for (let rank = minRank; rank <= maxRank; rank++) {
+                for (let c = 0; c < copies; c++) {
+                    tiles.push(this.createTile(suit, rank as any));
+                }
+            }
+        }
+    }
+
+    private addWindTiles(tiles: ITile[], copies: number) {
+        const windRanks = [TileRank.East, TileRank.South, TileRank.West, TileRank.North];
+        for (const rank of windRanks) {
+            for (let c = 0; c < copies; c++) {
+                tiles.push(this.createTile(TileSuit.Wind, rank));
+            }
+        }
+    }
+
+    private addDragonTiles(tiles: ITile[], copies: number) {
+        const dragonRanks = [TileRank.Zhong, TileRank.Fa, TileRank.Bai];
+        for (const rank of dragonRanks) {
+            for (let c = 0; c < copies; c++) {
+                tiles.push(this.createTile(TileSuit.Dragon, rank));
+            }
+        }
     }
 
     private createTile(suit: TileSuit, rank: TileRank): ITile {

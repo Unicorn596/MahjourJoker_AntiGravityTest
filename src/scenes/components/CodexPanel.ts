@@ -14,12 +14,9 @@ export class CodexPanel extends Phaser.GameObjects.Container {
         const width = 800;
         const height = 500;
 
-        // 背景版
-        const bg = this.scene.add.graphics();
-        bg.fillStyle(0x222222, 0.95);
-        bg.fillRoundedRect(-width / 2, -height / 2, width, height, 16);
-        bg.lineStyle(4, 0xffd700, 1);
-        bg.strokeRoundedRect(-width / 2, -height / 2, width, height, 16);
+        // 背景版使用九宫格
+        const bg = this.scene.add.nineslice(0, 0, 'panel_bg', undefined, width, height, 24, 24, 24, 24);
+        bg.setTint(0x3a3a45);
 
         // 标题
         const title = this.scene.add.text(0, -height / 2 + 40, '收藏图鉴', {

@@ -10,16 +10,21 @@ export class SparrowSystem {
         this.maxSparrows = maxCapacity;
 
         // 监听算分事件，自动叠加被动增益
-        globalBus.on<{ result: any; breakdown: IScoreBreakdown }>('game:scoring', (payload) => {
+        globalBus.on<{ result: any }>('round:completedHand', () => {
+            // TODO: GDD v2 下的分数 breakdown 正在重构，这里暂时不抛错以便主流程跑通
+            /*
             if (payload && payload.breakdown) {
                 this.applyAll(payload.breakdown);
             }
+            */
         });
 
         // 监听回合胜利发钱事件（经济类雀鸟）
-        globalBus.on<{ reward: number }>('game:roundWon', (payload) => {
+        globalBus.on<{ score: number, reward?: number }>('round:victory', (payload) => {
             if (payload) {
-                this.applyEconomy(payload);
+                // 如果后续有实际派发的金币可以累加
+                payload.reward = payload.reward || 0;
+                this.applyEconomy(payload as any);
             }
         });
     }

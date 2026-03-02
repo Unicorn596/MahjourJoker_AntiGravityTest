@@ -10,8 +10,13 @@ export class TileSprite extends Phaser.GameObjects.Container {
     public tileData: ITile;
     private bgGraphics: Phaser.GameObjects.Graphics;
     private symbolText: Phaser.GameObjects.Text;
+    private tileImage?: Phaser.GameObjects.Image; // 新增：用于显示预渲染的资产图
     private _isSelected: boolean = false;
     private highlightRect: Phaser.GameObjects.Graphics;
+
+    // 用于3D倾斜的包裹容器
+    private innerContainer: Phaser.GameObjects.Container;
+    private shadowGraphics: Phaser.GameObjects.Graphics;
 
     // 牌面尺寸
     private readonly TILE_W = 60;
@@ -20,6 +25,14 @@ export class TileSprite extends Phaser.GameObjects.Container {
     constructor(scene: Phaser.Scene, x: number, y: number, tileData: ITile) {
         super(scene, x, y);
         this.tileData = tileData;
+
+        this.innerContainer = scene.add.container(0, 0);
+
+        // 阴影
+        this.shadowGraphics = scene.add.graphics();
+        this.shadowGraphics.fillStyle(0x000000, 0.4);
+        this.shadowGraphics.fillRoundedRect(-this.TILE_W / 2 + 5, -this.TILE_H / 2 + 5, this.TILE_W, this.TILE_H, 6);
+        this.innerContainer.add(this.shadowGraphics);
 
         // 背景
         this.bgGraphics = scene.add.graphics();
@@ -30,33 +43,57 @@ export class TileSprite extends Phaser.GameObjects.Container {
         this.highlightRect.lineStyle(4, 0xffd700, 1);
         this.highlightRect.strokeRoundedRect(-this.TILE_W / 2, -this.TILE_H / 2, this.TILE_W, this.TILE_H, 6);
         this.highlightRect.setVisible(false);
+        this.innerContainer.add([this.bgGraphics, this.highlightRect]);
 
-        // 文字信息拼装
-        const uiText = this.getTileLabel(tileData);
-        const colorStr = this.getTileColor(tileData);
+        // 尝试加载真实资产，如果没有则后推使用文字
+        const assetKey = this.getAssetKey(tileData);
+        if (scene.textures.exists(assetKey)) {
+            // 使用生成的真实素材 (假定材质比例与 TILE_W/H 相近，按需缩放)
+            this.tileImage = scene.add.image(0, 0, assetKey);
+            // 这里我们等比缩放贴图以适应原卡牌尺寸
+            const scaleX = (this.TILE_W - 10) / this.tileImage.width;
+            const scaleY = (this.TILE_H - 10) / this.tileImage.height;
+            const scale = Math.min(scaleX, scaleY);
+            this.tileImage.setScale(scale);
+            this.innerContainer.add(this.tileImage);
 
-        this.symbolText = scene.add.text(0, 0, uiText, {
-            fontFamily: '"Noto Sans SC", sans-serif',
-            fontSize: tileData.suit === TileSuit.Wind || tileData.suit === TileSuit.Dragon ? '32px' : '28px',
-            color: colorStr,
-            fontStyle: 'bold',
-            align: 'center'
-        });
-        this.symbolText.setOrigin(0.5);
+            // 还是需要给个占位的symbolText变量以防引用出错，但不显示
+            this.symbolText = scene.add.text(0, 0, '').setVisible(false);
+        } else {
+            // 文字信息拼装 (FallBack)
+            const uiText = this.getTileLabel(tileData);
+            const colorStr = this.getTileColor(tileData);
 
-        this.add([this.bgGraphics, this.highlightRect, this.symbolText]);
+            this.symbolText = scene.add.text(0, 0, uiText, {
+                fontFamily: '"Noto Sans SC", sans-serif',
+                fontSize: tileData.suit === TileSuit.Wind || tileData.suit === TileSuit.Dragon ? '32px' : '28px',
+                color: colorStr,
+                fontStyle: 'bold',
+                align: 'center'
+            });
+            this.symbolText.setOrigin(0.5);
+            this.innerContainer.add(this.symbolText);
+        }
+
+        this.add(this.innerContainer);
 
         // 交互范围设置
         this.setSize(this.TILE_W, this.TILE_H);
         this.setInteractive({ useHandCursor: true });
 
-        // 设置居中点进行缩放动画
-        this.setInteractive();
-
         this.on('pointerover', this.onHover, this);
         this.on('pointerout', this.onOut, this);
+        this.on('pointermove', this.onMove, this);
 
         scene.add.existing(this);
+    }
+
+    private getAssetKey(t: ITile): string {
+        // 根据相符的素材key返回，目前阶段只生成了三个
+        if (t.suit === TileSuit.Tiao && t.rank === 1) return 'tile_bamboo_1';
+        if (t.suit === TileSuit.Bing && t.rank === 5) return 'tile_dots_5';
+        if (t.suit === TileSuit.Wan && t.rank === 9) return 'tile_characters_9';
+        return `tile_${t.suit}_${t.rank}`;
     }
 
     private drawBackground(color: number) {
@@ -119,14 +156,46 @@ export class TileSprite extends Phaser.GameObjects.Container {
     }
 
     private onHover() {
-        if (!this._isSelected) {
-            this.scene.tweens.add({ targets: this, scale: 1.1, duration: 100 });
-        }
+        this.scene.tweens.add({ targets: this.innerContainer, scale: 1.15, duration: 150, ease: 'Back.easeOut' });
+        this.shadowGraphics.x = 8;
+        this.shadowGraphics.y = 8;
     }
 
     private onOut() {
-        if (!this._isSelected) {
-            this.scene.tweens.add({ targets: this, scale: 1, duration: 100 });
+        this.scene.tweens.add({ targets: this.innerContainer, scale: 1, duration: 150, ease: 'Back.easeIn' });
+
+        // 恢复3D形变
+        this.scene.tweens.add({
+            targets: this.innerContainer,
+            angle: 0,
+            x: 0,
+            y: 0,
+            duration: 150,
+            ease: 'Power2'
+        });
+        this.shadowGraphics.x = 0;
+        this.shadowGraphics.y = 0;
+    }
+
+    private onMove(_pointer: Phaser.Input.Pointer, localX: number, localY: number) {
+        // Pseudo-3D Parallax Tilt Effect
+        // 计算鼠标在牌内的相对位置 (-1 to 1)
+        const relX = (localX / this.TILE_W) * 2 - 1;
+        const relY = (localY / this.TILE_H) * 2 - 1;
+
+        // 根据鼠标位置轻微挪动物品和整体角度
+        this.innerContainer.angle = relX * 10;
+
+        if (this.tileImage) {
+            this.tileImage.x = -relX * 4;
+            this.tileImage.y = -relY * 4;
+        } else {
+            this.symbolText.x = -relX * 4;
+            this.symbolText.y = -relY * 4;
         }
+
+        // 阴影反向移动以增强悬浮感
+        this.shadowGraphics.x = relX * 10;
+        this.shadowGraphics.y = relY * 10;
     }
 }

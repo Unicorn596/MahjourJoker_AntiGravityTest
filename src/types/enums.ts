@@ -116,8 +116,8 @@ export enum TalismanEffectType {
     CopyTile = 'copyTile',
     /** 净化符: 从牌库永久移除指定牌 */
     RemoveFromDeck = 'removeFromDeck',
-    /** 延寿符: +1 提交次数 */
-    AddSubmit = 'addSubmit',
+    /** 延寿符: +1 换牌次数 */
+    AddDiscard = 'addDiscard',
 }
 
 // ─── 对局外流程枚举 ─────────────────────────────────────────
@@ -157,6 +157,16 @@ export enum PermanentTalentType {
 export enum PackType {
     SparrowPack = 'sparrowPack',
     TalismanPack = 'talismanPack',
+}
+
+/** 初始牌组模式 (Deck Mode) */
+export enum DeckMode {
+    /** 标准136张牌组 */
+    Standard = 'standard',
+    /** 纯条子倾向牌组 (以条子为主，极易做清一色) */
+    Bamboo = 'bamboo',
+    /** 断幺九纯净版 (无1,9，无字牌) */
+    Simples = 'simples',
 }
 
 /** 语言 */

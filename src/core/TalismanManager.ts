@@ -39,8 +39,8 @@ export class TalismanManager {
             case TalismanEffectType.RemoveFromDeck:
                 result = this.applyRemoveFromDeck(talisman, ctx);
                 break;
-            case TalismanEffectType.AddSubmit:
-                result = this.applyAddSubmit(talisman, ctx);
+            case TalismanEffectType.AddDiscard:
+                result = this.applyAddDiscard(talisman, ctx);
                 break;
             default:
                 result = { success: false, affectedTiles: [], message: `未实现的符咒效果: ${talisman.effectType}` };
@@ -135,14 +135,14 @@ export class TalismanManager {
         };
     }
 
-    // ─── 延寿符 (AddSubmit) ────────────────────────────────
+    // ─── 延寿符 (AddDiscard) ────────────────────────────────
 
-    private applyAddSubmit(_talisman: ITalisman, ctx: ITalismanUseContext): ITalismanUseResult {
-        ctx.roundConfig.maxSubmitCount += 1;
+    private applyAddDiscard(_talisman: ITalisman, ctx: ITalismanUseContext): ITalismanUseResult {
+        ctx.roundConfig.maxDiscardCount += 1;
         return {
             success: true,
             affectedTiles: [],
-            message: `提交次数上限 +1 (当前: ${ctx.roundConfig.maxSubmitCount})`,
+            message: `换牌次数上限 +1 (当前: ${ctx.roundConfig.maxDiscardCount})`,
         };
     }
 }
@@ -196,7 +196,7 @@ export function runTalismanManagerTests(): void {
             hand,
             deckManager: new DeckManager(1),
             targetTileIds: ['gold_target'],
-            roundConfig: { targetScore: 100, maxSubmitCount: 3, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
+            roundConfig: { targetScore: 100, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
             rng: new RNG(1),
         };
         const result = mgr.useTalisman(talisman, ctx);
@@ -215,7 +215,7 @@ export function runTalismanManagerTests(): void {
             hand,
             deckManager: new DeckManager(2),
             targetTileIds: ['glass_target'],
-            roundConfig: { targetScore: 100, maxSubmitCount: 3, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
+            roundConfig: { targetScore: 100, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
             rng: new RNG(2),
         };
         const result = mgr.useTalisman(talisman, ctx);
@@ -233,7 +233,7 @@ export function runTalismanManagerTests(): void {
             hand,
             deckManager: new DeckManager(3),
             targetTileIds: ['copy_target'],
-            roundConfig: { targetScore: 100, maxSubmitCount: 3, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
+            roundConfig: { targetScore: 100, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
             rng: new RNG(3),
         };
         const result = mgr.useTalisman(talisman, ctx);
@@ -261,7 +261,7 @@ export function runTalismanManagerTests(): void {
             hand: [],
             deckManager: dm,
             targetTileIds: idsToRemove,
-            roundConfig: { targetScore: 100, maxSubmitCount: 3, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
+            roundConfig: { targetScore: 100, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
             rng: new RNG(42),
         };
         const result = mgr.useTalisman(talisman, ctx);
@@ -273,12 +273,12 @@ export function runTalismanManagerTests(): void {
             && result.affectedTiles.length === 3, '\n');
     }
 
-    // ─── 测试 5: 延寿符 — +1 提交次数 ───
+    // ─── 测试 5: 延寿符 — +1 换牌次数 ───
     {
         const roundConfig: IRoundConfig = {
-            targetScore: 100, maxSubmitCount: 3, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8,
+            targetScore: 100, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8,
         };
-        const talisman = createTestTalisman(TalismanEffectType.AddSubmit, TalismanCategory.Seal);
+        const talisman = createTestTalisman(TalismanEffectType.AddDiscard, TalismanCategory.Seal);
         const ctx: ITalismanUseContext = {
             hand: [],
             deckManager: new DeckManager(5),
@@ -288,8 +288,8 @@ export function runTalismanManagerTests(): void {
         };
         const result = mgr.useTalisman(talisman, ctx);
         console.log('测试 5: 延寿符');
-        console.log('  maxSubmitCount:', roundConfig.maxSubmitCount);
-        console.log('  通过:', result.success && roundConfig.maxSubmitCount === 4, '\n');
+        console.log('  maxDiscardCount:', roundConfig.maxDiscardCount);
+        console.log('  通过:', result.success && roundConfig.maxDiscardCount === 4, '\n');
     }
 
     // ─── 测试 6: 边界 — 不存在的目标牌 ───
@@ -301,7 +301,7 @@ export function runTalismanManagerTests(): void {
             hand,
             deckManager: new DeckManager(6),
             targetTileIds: ['nonexistent_id'],
-            roundConfig: { targetScore: 100, maxSubmitCount: 3, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
+            roundConfig: { targetScore: 100, maxDiscardCount: 3, maxDiscardTiles: 3, initialHandSize: 8 },
             rng: new RNG(6),
         };
         const result = mgr.useTalisman(talisman, ctx);

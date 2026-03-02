@@ -10,7 +10,7 @@
  *  纯逻辑层 —— 不引用任何 Phaser 代码
  */
 
-import { PackType, TalismanEffectType } from '../types/enums';
+import { PackType, TalismanEffectType, TalismanCategory } from '../types/enums';
 import type { ISparrow, ITalisman, IShopItem, IShopState, IRunState, IPlayerProfile } from '../types/interfaces';
 import { SparrowRegistry, createDefaultSparrows } from './SparrowRegistry';
 import { RNG } from '../utils/RNG';
@@ -201,6 +201,7 @@ export class ShopManager {
             id: `talisman_${++_shopUid}`,
             name: names[effectType] || '符咒',
             description: `${names[effectType]} 效果`,
+            category: TalismanCategory.Talisman,
             effectType,
             value: values[effectType] || 1,
             uses: effectType === TalismanEffectType.TempMult ? 1 : 2,
